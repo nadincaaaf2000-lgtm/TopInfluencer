@@ -430,6 +430,53 @@ with tabs[5]:
             [{"posts": posts, "followers": followers, "avg_likes": avg_likes, "60_day_eng_rate": eng,
               "new_post_avg_like": new_like, "total_likes": total, "country": country}]
         )
+        
+        pred_dt = float(R["dt"].predict(row)[0])
+        pred_rf = float(R["rf"].predict(row)[0])
+
         m1, m2 = st.columns(2)
-        m1.metric("Decision Tree", f"{R['dt'].predict(row)[0]:.1f}")
-        m2.metric("Random Forest", f"{R['rf'].predict(row)[0]:.1f}")
+        m1.metric("Decision Tree", f"{pred_dt:.1f}")
+        m2.metric("Random Forest", f"{pred_rf:.1f}")
+
+        st.subheader("Kesimpulan hasil prediksi")
+
+        rmse_dt = s_dt["RMSE"]
+        rmse_rf = s_rf["RMSE"]
+        r2_dt = s_dt["R2 Score"]
+        r2_rf = s_rf["R2 Score"]
+
+        if rmse_rf < rmse_dt:
+            st.success(
+                "Random Forest memiliki performa prediksi lebih baik "
+                "berdasarkan hasil pengujian data."
+            )
+            st.write(
+                f"RMSE Random Forest: {rmse_rf:.4f} | "
+                f"RMSE Decision Tree: {rmse_dt:.4f}"
+            )
+        elif rmse_dt < rmse_rf:
+            st.success(
+                "Decision Tree memiliki performa prediksi lebih baik "
+                "berdasarkan hasil pengujian data."
+            )
+            st.write(
+                f"RMSE Decision Tree: {rmse_dt:.4f} | "
+                f"RMSE Random Forest: {rmse_rf:.4f}"
+            )
+        elif r2_rf > r2_dt:
+            st.success(
+                "Kedua model memiliki RMSE yang sama, tetapi "
+                "Random Forest memiliki nilai R² lebih tinggi."
+            )
+        elif r2_dt > r2_rf:
+            st.success(
+                "Kedua model memiliki RMSE yang sama, tetapi "
+                "Decision Tree memiliki nilai R² lebih tinggi."
+            )
+        else:
+            st.info("Kedua model memiliki performa evaluasi yang sama.")
+
+        st.caption(
+            "Kesimpulan didasarkan pada evaluasi data pengujian, "
+            "bukan hanya dari besar kecilnya angka hasil prediksi."
+        )
