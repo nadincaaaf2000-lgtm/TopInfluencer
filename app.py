@@ -198,7 +198,7 @@ with st.sidebar:
     uploaded = st.file_uploader("Upload dataset CSV kamu sendiri (opsional)", type="csv")
     st.markdown(
         "Top Instagram Influencers. "
-        "File upload harus punya kolom: "
+        "File upload memiliki: "
         + ", ".join(f"`{c}`" for c in FEATURES + [TARGET])
         + "."
     )
