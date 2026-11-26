@@ -127,8 +127,12 @@ def scores(y_true, pred):
 
 @st.cache_resource(show_spinner="Melatih & tuning model (5-fold CV)...")
 def run_analysis(X, y):
-    X_tr, X_te, y_tr, y_te = train_test_split(X, y, test_size=TEST_SIZE, random_state=SEED)
-            cv = KFold(n_splits=CV_FOLDS, shuffle=True, random_state=SEED)
+    X_tr, X_te, y_tr, y_te = train_test_split(
+        X, y, test_size=TEST_SIZE, random_state=SEED
+    )
+
+    cv = KFold(n_splits=CV_FOLDS, shuffle=True, random_state=SEED)
+
     specs = {
         "Decision Tree": (
             DecisionTreeRegressor(random_state=SEED),
@@ -139,7 +143,6 @@ def run_analysis(X, y):
             RF_PARAM_DIST
         ),
     }
-
     models, tuning = {}, []
 
     for name, (est, params) in specs.items():
