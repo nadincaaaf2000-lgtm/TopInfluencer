@@ -157,9 +157,9 @@ def run_analysis(X, y):
             gs = RandomizedSearchCV(
                 estimator=make_pipeline(clone(est)),
                 param_distributions=params,
-                n_iter=40,
+                n_iter=15,
                 cv=cv,
-                n_jobs=-1,
+                n_jobs=1,
                 scoring="neg_root_mean_squared_error",
                 random_state=SEED,
                 verbose=0
@@ -169,7 +169,9 @@ def run_analysis(X, y):
                 estimator=make_pipeline(clone(est)),
                 param_grid=params,
                 cv=cv,
-                n_jobs=-1,
+                cv=cv,
+                n_jobs=1,
+                scoring="neg_root_mean_squared_error",
                 scoring="neg_root_mean_squared_error"
             )
 
