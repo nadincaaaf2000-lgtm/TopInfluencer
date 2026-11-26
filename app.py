@@ -203,13 +203,6 @@ with st.sidebar:
         + ", ".join(f"`{c}`" for c in FEATURES + [TARGET])
         + "."
     )
-    st.header("⚙️ Parameter model")
-    st.markdown(
-        f"Sama dengan kode Colab:\n\n"
-        f"- Data uji **{int(TEST_SIZE * 100)}%**, random state **{SEED}**\n"
-        f"- Decision Tree: max depth **5**, min split **4**, min leaf **2**\n"
-        f"- Random Forest: **100** pohon, max depth **5**, min split **4**, min leaf **2**"
-    )
 
 # ---------------------------------------------------------------------------
 # Data (otomatis)
