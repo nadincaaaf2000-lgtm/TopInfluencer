@@ -241,8 +241,9 @@ with tabs[0]:
     c1.metric("Jumlah baris", df.shape[0])
     c2.metric("Jumlah kolom", df.shape[1])
     c3.metric("Data latih / uji", f"{R['n_train']} / {R['n_test']}")
-    st.subheader("Cuplikan data")
-    st.dataframe(df.head(), width="stretch")
+    st.subheader("Seluruh dataset (maksimal 200 baris)")
+    st.caption(f"Menampilkan {min(len(df), 200)} dari {len(df)} baris data.")
+    st.dataframe(df.head(200), width="stretch", height=500)
 
 # ---- Decision Tree / Random Forest ---------------------------------------
 def model_tab(label, pipe, pred, s, tree_title, tree_model):
@@ -345,7 +346,6 @@ with tabs[3]:
             st.write(f"Decision Tree memiliki RMSE {abs(imp_pct):.2f}% lebih rendah dibandingkan Random Forest.")
         else:
             st.write("Kedua algoritma memiliki RMSE yang sama.")
- 
     if best_r2 >= 0.7:
         st.success(
             f"{best_name} memiliki performa prediksi yang baik "
