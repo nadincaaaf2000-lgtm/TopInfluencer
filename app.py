@@ -49,19 +49,6 @@ RF_GRID = {
     "model__min_samples_split": [2, 4],
     "model__min_samples_leaf": [1, 2, 4],
 }
-DATA_DICT = pd.DataFrame(
-    [
-        ("rank", "Peringkat influencer", "integer"),
-        ("channel_info", "Username akun Instagram", "teks"),
-        ("influence_score", "Skor pengaruh influencer (TARGET)", "numerik 0-100"),
-        ("posts", "Jumlah postingan", "numerik (3.3k = 3.300)"),
-        ("followers", "Jumlah pengikut", "numerik (475m = 475.000.000)"),
-        ("avg_likes", "Rata-rata likes per post", "numerik"),
-        ("60_day_eng_rate", "Engagement rate 60 hari terakhir", "persen (%)"),
-        ("new_post_avg_like", "Rata-rata likes pada post terbaru", "numerik"),
-        ("total_likes", "Total likes seluruh post", "numerik"),
-        ("country", "Negara asal influencer", "kategorik"),
-    ],
     columns=["column", "description", "unit_or_type"],
 )
 
@@ -448,6 +435,3 @@ with tab_eda:
 
     st.subheader("Statistik Deskriptif Fitur")
     st.dataframe(dfn.describe().T.round(4), width="stretch")
-
-    st.subheader("Kamus Data (Data Dictionary)")
-    st.dataframe(DATA_DICT, hide_index=True, width="stretch")
