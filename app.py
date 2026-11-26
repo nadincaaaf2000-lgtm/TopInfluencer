@@ -345,12 +345,22 @@ with tabs[3]:
             st.write(f"Decision Tree memiliki RMSE {abs(imp_pct):.2f}% lebih rendah dibandingkan Random Forest.")
         else:
             st.write("Kedua algoritma memiliki RMSE yang sama.")
-    if best_r2 >= 0.7:
-        st.success("Model memiliki kemampuan prediksi yang cukup baik.")
-    elif best_r2 >= 0:
-        st.warning("Model memiliki kemampuan prediksi yang masih terbatas.")
-    else:
-        st.error("Model belum memiliki performa prediksi yang baik karena R2 negatif.")
+   if best_r2 >= 0.7:
+    st.success(
+        f"{best_name} memiliki performa prediksi yang baik "
+        f"dengan nilai R² sebesar {best_r2:.4f}."
+    )
+elif best_r2 >= 0:
+    st.warning(
+        f"{best_name} memiliki performa prediksi yang masih terbatas "
+        f"dengan nilai R² sebesar {best_r2:.4f}."
+    )
+else:
+    st.warning(
+        f"{best_name} merupakan algoritma terbaik berdasarkan RMSE, "
+        f"tetapi kemampuan prediksinya masih belum optimal "
+        f"karena nilai R² sebesar {best_r2:.4f}."
+    )
 
 # ---- Konsistensi ----------------------------------------------------------
 with tabs[4]:
