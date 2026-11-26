@@ -197,7 +197,7 @@ with st.sidebar:
     st.header("📂 Dataset")
     uploaded = st.file_uploader("Upload dataset CSV kamu sendiri (opsional)", type="csv")
     st.markdown(
-        "Kalau tidak upload, web memakai **dataset bawaan** (Top Instagram Influencers). "
+        "Top Instagram Influencers. "
         "File upload harus punya kolom: "
         + ", ".join(f"`{c}`" for c in FEATURES + [TARGET])
         + "."
