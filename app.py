@@ -49,9 +49,6 @@ RF_GRID = {
     "model__min_samples_split": [2, 4],
     "model__min_samples_leaf": [1, 2, 4],
 }
-    columns=["column", "description", "unit_or_type"],
-)
-
 
 # ---------------------------------------------------------------------------
 # Load & preprocessing
