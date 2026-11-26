@@ -83,7 +83,6 @@ def convert_value(value):
 
 @st.cache_data(show_spinner=False)
 def load_default():
-    """CSV di repo dulu; kalau tidak ada, pakai salinan yang tertanam di default_data.py."""
     here = Path(__file__).resolve().parent
     for path in (here / CSV_NAME, here / "data" / CSV_NAME, Path.cwd() / CSV_NAME):
         if path.exists():
