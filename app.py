@@ -15,7 +15,7 @@ from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.impute import SimpleImputer
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
-from sklearn.model_selection import GridSearchCV, RandomizedSearchCV, KFold, train_test_split
+from sklearn.model_selection import GridSearchCV, KFold, train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder
 from sklearn.tree import DecisionTreeRegressor, plot_tree
@@ -43,13 +43,11 @@ DT_GRID = {
     "model__min_samples_split": [2, 4, 10],
     "model__min_samples_leaf": [1, 2, 4],
 }
-RF_PARAM_DIST = {
-    "model__n_estimators": [200, 300, 500, 700],
-    "model__max_depth": [None, 5, 8, 10, 15, 20],
-    "model__min_samples_split": [2, 4, 6, 10],
-    "model__min_samples_leaf": [1, 2, 3, 4, 6],
-    "model__max_features": [0.5, 0.7, 1.0],
-    "model__bootstrap": [True, False],
+RF_GRID = {
+    "model__n_estimators": [100, 200],
+    "model__max_depth": [5, 10, None],
+    "model__min_samples_split": [2, 4],
+    "model__min_samples_leaf": [1, 2, 4],
 }
 
 # ---------------------------------------------------------------------------
@@ -127,67 +125,22 @@ def scores(y_true, pred):
 
 @st.cache_resource(show_spinner="Melatih & tuning model (5-fold CV)...")
 def run_analysis(X, y):
-    X_tr, X_te, y_tr, y_te = train_test_split(
-        X, y, test_size=TEST_SIZE, random_state=SEED
-    )
-
+    X_tr, X_te, y_tr, y_te = train_test_split(X, y, test_size=TEST_SIZE, random_state=SEED)
     cv = KFold(n_splits=CV_FOLDS, shuffle=True, random_state=SEED)
-
     specs = {
-        "Decision Tree": (
-            DecisionTreeRegressor(random_state=SEED),
-            DT_GRID
-        ),
-        "Random Forest": (
-            RandomForestRegressor(random_state=SEED),
-            RF_PARAM_DIST
-        ),
+        "Decision Tree": (DecisionTreeRegressor(random_state=SEED), DT_GRID),
+        "Random Forest": (RandomForestRegressor(random_state=SEED), RF_GRID),
     }
     models, tuning = {}, []
-
-    for name, (est, params) in specs.items():
-
-        # Model baseline
-        models[f"{name} (Baseline)"] = make_pipeline(
-            clone(est)
-        ).fit(X_tr, y_tr)
-
-        # Proses hyperparameter tuning
-        if name == "Random Forest":
-            gs = RandomizedSearchCV(
-                estimator=make_pipeline(clone(est)),
-                param_distributions=params,
-                n_iter=15,
-                cv=cv,
-                n_jobs=1,
-                scoring="neg_root_mean_squared_error",
-                random_state=SEED,
-                verbose=0
-            )
-        else:
-            gs = GridSearchCV(
-                estimator=make_pipeline(clone(est)),
-                param_grid=params,
-                cv=cv,
-                cv=cv,
-                n_jobs=1,
-                scoring="neg_root_mean_squared_error",
-                scoring="neg_root_mean_squared_error"
-            )
-
-        gs.fit(X_tr, y_tr)
-
+    for name, (est, grid) in specs.items():
+        models[f"{name} (Baseline)"] = make_pipeline(clone(est)).fit(X_tr, y_tr)
+        gs = GridSearchCV(make_pipeline(clone(est)), grid, cv=cv, n_jobs=-1,
+                          scoring="neg_root_mean_squared_error").fit(X_tr, y_tr)
         models[f"{name} (Tuned)"] = gs.best_estimator_
-
         tuning.append({
-            "model": name,
-            "candidate_count": len(gs.cv_results_["params"]),
-            "cv_folds": CV_FOLDS,
+            "model": name, "candidate_count": len(gs.cv_results_["params"]), "cv_folds": CV_FOLDS,
             "best_cv_rmse": round(-gs.best_score_, 4),
-            "best_params": str({
-                k.replace("model__", ""): v
-                for k, v in gs.best_params_.items()
-            }),
+            "best_params": str({k.replace("model__", ""): v for k, v in gs.best_params_.items()}),
         })
     preds, perf = {}, []
     for m in MODEL_NAMES:
