@@ -1,404 +1,389 @@
-# ==============================================================
-# WEBSITE ANALISIS PERBANDINGAN DECISION TREE DAN RANDOM FOREST
-# DATASET: TOP INSTAGRAM INFLUENCERS | TARGET: INFLUENCE SCORE
-# Jalankan dengan:  streamlit run app.py
-# ==============================================================
-
+import base64
+import gzip
+import io
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
+import plotly.express as px
 import streamlit as st
-
-from sklearn.model_selection import train_test_split
-from sklearn.tree import DecisionTreeRegressor, plot_tree
-from sklearn.ensemble import RandomForestRegressor
 from sklearn.compose import ColumnTransformer
-from sklearn.preprocessing import OneHotEncoder
-from sklearn.impute import SimpleImputer
-from sklearn.pipeline import Pipeline
+from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+from sklearn.model_selection import KFold, cross_val_score, train_test_split
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import OneHotEncoder
+from sklearn.tree import DecisionTreeRegressor
 
+# ---------------------------------------------------------------------------
+# Konfigurasi halaman
+# ---------------------------------------------------------------------------
 st.set_page_config(
-    page_title="Decision Tree vs Random Forest - Instagram Influencers",
+    page_title="Decision Tree vs Random Forest",
     page_icon="🌳",
     layout="wide",
 )
 
+ACCENT = "#F26B1D"
 
-# ---------------------- TEMA INSTAGRAM (oranye, merah, putih) ----------------------
-ORANGE, RED = "#F77737", "#E4281F"
-GRADIENT = "linear-gradient(90deg, #FCAF45 0%, #F77737 40%, #E4281F 100%)"
+# CSS hanya memakai warna aksen (oranye). Warna latar & teks sengaja TIDAK
+# di-hardcode supaya selalu mengikuti tema Streamlit (.streamlit/config.toml),
+# jadi teks tidak akan pernah "nabrak" dengan background.
+st.markdown(
+    f"""
+    <style>
+    h1 {{ color: {ACCENT} !important; font-weight: 800 !important; }}
+    [data-testid="stSidebar"] {{ border-right: 3px solid {ACCENT}; }}
+    [data-testid="stSidebar"] h2,
+    [data-testid="stSidebar"] h3 {{ color: {ACCENT} !important; }}
+    [data-testid="stMetricValue"] {{ color: {ACCENT}; }}
+    [data-testid="stSidebar"] code {{
+        color: {ACCENT};
+        background: rgba(242, 107, 29, 0.12);
+        padding: 1px 6px;
+        border-radius: 4px;
+    }}
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
-st.markdown(f"""
-<style>
-.block-container {{ padding-top: 1.5rem; }}
-h1 {{
-    background: {GRADIENT};
-    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
-    font-weight: 800;
-}}
-h2, h3 {{ color: {RED}; }}
-[data-testid="stMetric"] {{
-    background: #FFFFFF; border: 1px solid #FFD9C2; border-left: 6px solid {ORANGE};
-    border-radius: 12px; padding: 12px 16px;
-    box-shadow: 0 2px 8px rgba(228, 40, 31, 0.08);
-}}
-[data-testid="stMetricValue"] {{ color: {RED}; font-weight: 700; }}
-button[data-baseweb="tab"] {{ font-weight: 600; }}
-button[data-baseweb="tab"][aria-selected="true"] {{ color: {RED}; }}
-div[data-baseweb="tab-highlight"] {{ background: {GRADIENT}; height: 3px; }}
-[data-testid="stSidebar"] {{ background: #FFF3EA; border-right: 3px solid {ORANGE}; }}
-[data-testid="stSidebar"] h2 {{ color: {RED}; }}
-[data-testid="stFileUploaderDropzone"] {{ border: 2px dashed {ORANGE}; background: #FFFFFF; }}
-</style>
-""", unsafe_allow_html=True)
-
-COLOR_DT, COLOR_RF = ORANGE, RED
-plt.rcParams.update({"axes.prop_cycle": plt.cycler(color=[RED, ORANGE, "#FCAF45"])})
-
-DEFAULT_DATASET = Path(__file__).parent / "top_insta_influencers_data.csv"
-
-NUMERIC_COLUMNS = [
-    "posts", "followers", "avg_likes",
-    "60_day_eng_rate", "new_post_avg_like", "total_likes",
+# ---------------------------------------------------------------------------
+# Definisi kolom
+# ---------------------------------------------------------------------------
+CSV_NAME = "top_insta_influencers_data.csv"
+NUM_COLS = [
+    "posts",
+    "followers",
+    "avg_likes",
+    "60_day_eng_rate",
+    "new_post_avg_like",
+    "total_likes",
 ]
-NUMERIC_FEATURES = list(NUMERIC_COLUMNS)
-CATEGORICAL_FEATURES = ["country"]
-FEATURES = NUMERIC_FEATURES + CATEGORICAL_FEATURES
+CAT_COLS = ["country"]
+FEATURES = NUM_COLS + CAT_COLS
 TARGET = "influence_score"
-RANDOM_STATES = [10, 20, 30, 40, 50]
+REQUIRED = FEATURES + [TARGET]
+SUFFIX = {"k": 1e3, "m": 1e6, "b": 1e9}
 
 
-# ---------------------- PREPROCESSING ----------------------
-
-def convert_value(value):
+# ---------------------------------------------------------------------------
+# Load & bersihkan data
+# ---------------------------------------------------------------------------
+def to_number(value):
+    """Ubah '3.3k', '475.8m', '29.0b', '1.39%' menjadi angka."""
     if pd.isna(value):
         return np.nan
-    value = str(value).strip().lower()
-    if value == "":
+    if isinstance(value, (int, float, np.number)):
+        return float(value)
+    s = str(value).strip().lower().replace(",", "")
+    if s in ("", "-", "nan", "none"):
         return np.nan
-    if value.endswith("%"):
-        return float(value[:-1])
-    multiplier = 1
-    if value.endswith("k"):
-        multiplier, value = 1_000, value[:-1]
-    elif value.endswith("m"):
-        multiplier, value = 1_000_000, value[:-1]
-    elif value.endswith("b"):
-        multiplier, value = 1_000_000_000, value[:-1]
-    return float(value.replace(",", "")) * multiplier
+    s = s.rstrip("%")
+    mult = 1.0
+    if s and s[-1] in SUFFIX:
+        mult = SUFFIX[s[-1]]
+        s = s[:-1]
+    try:
+        return float(s) * mult
+    except ValueError:
+        return np.nan
 
 
-def build_preprocessor():
-    numeric_transformer = Pipeline([("imputer", SimpleImputer(strategy="median"))])
-    categorical_transformer = Pipeline([
-        ("imputer", SimpleImputer(strategy="most_frequent")),
-        ("encoder", OneHotEncoder(handle_unknown="ignore")),
-    ])
-    return ColumnTransformer([
-        ("num", numeric_transformer, NUMERIC_FEATURES),
-        ("cat", categorical_transformer, CATEGORICAL_FEATURES),
-    ])
+def prepare(raw: pd.DataFrame) -> pd.DataFrame:
+    df = raw.copy()
+    df.columns = [str(c).strip().lower().replace("\ufeff", "") for c in df.columns]
+    missing = [c for c in REQUIRED if c not in df.columns]
+    if missing:
+        raise ValueError("Kolom wajib tidak ada: " + ", ".join(missing))
 
-
-def build_dt():
-    return Pipeline([
-        ("preprocessor", build_preprocessor()),
-        ("model", DecisionTreeRegressor(
-            max_depth=5, min_samples_split=4, min_samples_leaf=2, random_state=42)),
-    ])
-
-
-def build_rf():
-    return Pipeline([
-        ("preprocessor", build_preprocessor()),
-        ("model", RandomForestRegressor(
-            n_estimators=100, max_depth=5, min_samples_split=4,
-            min_samples_leaf=2, random_state=42, n_jobs=-1)),
-    ])
-
-
-def evaluate(y_true, y_pred):
-    mse = mean_squared_error(y_true, y_pred)
-    return {
-        "MAE": mean_absolute_error(y_true, y_pred),
-        "MSE": mse,
-        "RMSE": float(np.sqrt(mse)),
-        "R2 Score": r2_score(y_true, y_pred),
-    }
-
-
-def prediction_table(y_test, pred):
-    hasil = pd.DataFrame({"Nilai Aktual": y_test.values, "Nilai Prediksi": pred})
-    hasil["Selisih"] = (hasil["Nilai Aktual"] - hasil["Nilai Prediksi"]).abs()
-    hasil["Persentase Prediksi"] = np.where(
-        hasil["Nilai Aktual"] != 0,
-        hasil["Nilai Prediksi"] / hasil["Nilai Aktual"] * 100,
-        np.nan,
+    for col in NUM_COLS + [TARGET]:
+        df[col] = df[col].map(to_number)
+    df = df.dropna(subset=[TARGET])
+    for col in NUM_COLS:
+        df[col] = df[col].fillna(df[col].median())
+    df["country"] = (
+        df["country"].fillna("Unknown").astype(str).str.strip().replace("", "Unknown")
     )
-    return hasil
+    return df.reset_index(drop=True)
 
-
-# ---------------------- PROSES UTAMA (di-cache) ----------------------
 
 @st.cache_data(show_spinner=False)
-def load_raw(source):
-    if isinstance(source, (str, Path)):
-        return pd.read_csv(source, encoding="utf-8-sig")
-    return pd.read_csv(source, encoding="utf-8-sig")
+def load_default():
+    """Dataset bawaan: cari CSV di repo, kalau tidak ada pakai versi tertanam."""
+    here = Path(__file__).resolve().parent
+    for path in (here / CSV_NAME, here / "data" / CSV_NAME, Path.cwd() / CSV_NAME):
+        if path.exists():
+            return pd.read_csv(path, encoding="utf-8-sig"), f"file {path.name}"
+    try:
+        from default_data import CSV_GZ_B64
+
+        raw = gzip.decompress(base64.b64decode(CSV_GZ_B64))
+        return pd.read_csv(io.BytesIO(raw), encoding="utf-8-sig"), "dataset bawaan"
+    except Exception as exc:  # noqa: BLE001
+        raise FileNotFoundError(
+            f"{CSV_NAME} tidak ditemukan dan default_data.py juga tidak bisa dibaca "
+            "(pastikan kedua file ada di folder yang sama dengan app.py)."
+        ) from exc
 
 
-def prepare(df_raw):
-    df = df_raw.copy()
-    missing = [c for c in NUMERIC_COLUMNS + CATEGORICAL_FEATURES + [TARGET] if c not in df.columns]
-    if missing:
-        raise ValueError("Kolom berikut tidak ditemukan di dataset: " + ", ".join(missing))
-    for col in NUMERIC_COLUMNS:
-        df[col] = df[col].apply(convert_value)
-    X = df[FEATURES].copy()
-    y = pd.to_numeric(df[TARGET], errors="coerce")
-    valid = y.notna()
-    return df, X.loc[valid], y.loc[valid]
+# ---------------------------------------------------------------------------
+# Model
+# ---------------------------------------------------------------------------
+def make_pipeline(model):
+    pre = ColumnTransformer(
+        [("cat", OneHotEncoder(handle_unknown="ignore"), CAT_COLS)],
+        remainder="passthrough",
+    )
+    return Pipeline([("pre", pre), ("model", model)])
+
+
+def grouped_importance(pipe):
+    names = pipe.named_steps["pre"].get_feature_names_out()
+    imp = pipe.named_steps["model"].feature_importances_
+    out = {}
+    for name, value in zip(names, imp):
+        key = "country" if name.startswith("cat__") else name.replace("remainder__", "")
+        out[key] = out.get(key, 0.0) + float(value)
+    return pd.Series(out).sort_values(ascending=True)
 
 
 @st.cache_data(show_spinner="Melatih model...")
-def run_analysis(X, y):
-    out = {}
-
-    # --- Pembagian data utama (random_state=42) ---
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-    out["n_train"], out["n_test"] = len(X_train), len(X_test)
-    out["y_test"] = y_test
-
-    dt = build_dt().fit(X_train, y_train)
-    rf = build_rf().fit(X_train, y_train)
-    pred_dt, pred_rf = dt.predict(X_test), rf.predict(X_test)
-    out["pred_dt"], out["pred_rf"] = pred_dt, pred_rf
-    out["eval_dt"], out["eval_rf"] = evaluate(y_test, pred_dt), evaluate(y_test, pred_rf)
-
-    # Figure pohon
-    dt_names = dt.named_steps["preprocessor"].get_feature_names_out()
-    fig1, ax1 = plt.subplots(figsize=(25, 12))
-    plot_tree(dt.named_steps["model"], feature_names=dt_names, filled=True,
-              rounded=True, max_depth=3, fontsize=9, ax=ax1)
-    ax1.set_title("Decision Tree untuk Prediksi Influence Score", fontsize=16)
-    out["fig_dt_tree"] = fig1
-
-    rf_names = rf.named_steps["preprocessor"].get_feature_names_out()
-    fig2, ax2 = plt.subplots(figsize=(25, 12))
-    plot_tree(rf.named_steps["model"].estimators_[0], feature_names=rf_names,
-              filled=True, rounded=True, max_depth=3, fontsize=9, ax=ax2)
-    ax2.set_title("Salah Satu Pohon dalam Random Forest", fontsize=16)
-    out["fig_rf_tree"] = fig2
-
-    imp = pd.DataFrame({
-        "Fitur": rf_names,
-        "Importance": rf.named_steps["model"].feature_importances_,
-    }).sort_values("Importance", ascending=False)
-    out["importance"] = imp
-
-    # --- 5 kali percobaan ---
-    rows = []
-    for nomor, seed in enumerate(RANDOM_STATES, start=1):
-        Xtr, Xte, ytr, yte = train_test_split(X, y, test_size=0.2, random_state=seed)
-        e_dt = evaluate(yte, build_dt().fit(Xtr, ytr).predict(Xte))
-        e_rf = evaluate(yte, build_rf().fit(Xtr, ytr).predict(Xte))
-        rows.append({
-            "Percobaan": nomor, "Random State": seed,
-            "MAE Decision Tree": e_dt["MAE"], "RMSE Decision Tree": e_dt["RMSE"],
-            "R2 Decision Tree": e_dt["R2 Score"],
-            "MAE Random Forest": e_rf["MAE"], "RMSE Random Forest": e_rf["RMSE"],
-            "R2 Random Forest": e_rf["R2 Score"],
-        })
-    out["trials"] = pd.DataFrame(rows)
-    return out
+def train_models(df, test_size, seed, n_estimators, dt_depth, rf_depth, leaf):
+    X, y = df[FEATURES], df[TARGET]
+    X_tr, X_te, y_tr, y_te = train_test_split(
+        X, y, test_size=test_size, random_state=seed
+    )
+    models = {
+        "Decision Tree": DecisionTreeRegressor(
+            max_depth=dt_depth, min_samples_leaf=leaf, random_state=seed
+        ),
+        "Random Forest": RandomForestRegressor(
+            n_estimators=n_estimators, max_depth=rf_depth, min_samples_leaf=leaf,
+            random_state=seed, n_jobs=-1,
+        ),
+    }
+    cv = KFold(n_splits=5, shuffle=True, random_state=seed)
+    results, preds, pipes = [], {}, {}
+    for name, model in models.items():
+        pipe = make_pipeline(model).fit(X_tr, y_tr)
+        pred = pipe.predict(X_te)
+        results.append(
+            {
+                "Model": name,
+                "MAE": mean_absolute_error(y_te, pred),
+                "RMSE": float(np.sqrt(mean_squared_error(y_te, pred))),
+                "R² Test": r2_score(y_te, pred),
+                "R² Train": r2_score(y_tr, pipe.predict(X_tr)),
+                "R² CV (5-fold)": cross_val_score(
+                    make_pipeline(model), X, y, cv=cv, scoring="r2"
+                ).mean(),
+            }
+        )
+        preds[name] = pred
+        pipes[name] = pipe
+    return {
+        "table": pd.DataFrame(results),
+        "y_test": y_te.to_numpy(),
+        "preds": preds,
+        "pipes": pipes,
+        "importance": {n: grouped_importance(p) for n, p in pipes.items()},
+        "n_train": len(X_tr),
+        "n_test": len(X_te),
+    }
 
 
-# ---------------------- TAMPILAN ----------------------
-
-st.title("🌳 Perbandingan Decision Tree dan Random Forest")
-st.caption("Prediksi **Influence Score** pada dataset Top Instagram Influencers")
-
+# ---------------------------------------------------------------------------
+# Sidebar
+# ---------------------------------------------------------------------------
 with st.sidebar:
     st.header("📂 Dataset")
-    uploaded = st.file_uploader("Upload dataset CSV kamu sendiri (opsional)", type=["csv"])
+    uploaded = st.file_uploader("Upload dataset CSV kamu sendiri (opsional)", type="csv")
     st.markdown(
-        "Kalau tidak upload, web memakai **dataset bawaan** (Top Instagram Influencers). "
-        "File upload harus punya kolom: `posts, followers, avg_likes, 60_day_eng_rate, "
-        "new_post_avg_like, total_likes, country, influence_score`."
+        "Kalau tidak upload, web memakai **dataset bawaan** (Top Instagram "
+        "Influencers). File upload harus punya kolom: "
+        + ", ".join(f"`{c}`" for c in REQUIRED)
+        + "."
     )
 
+    st.header("⚙️ Pengaturan Model")
+    test_size = st.slider("Porsi data uji", 0.10, 0.50, 0.20, 0.05)
+    seed = st.number_input("Random state", 0, 9999, 42, 1)
+    dt_depth = st.slider("Decision Tree: max depth", 1, 20, 3)
+    n_estimators = st.slider("Random Forest: jumlah pohon", 10, 500, 200, 10)
+    rf_depth = st.slider("Random Forest: max depth", 1, 30, 5)
+    leaf = st.slider("Min sampel per daun (kedua model)", 1, 20, 5)
+
+# ---------------------------------------------------------------------------
+# Ambil data (otomatis)
+# ---------------------------------------------------------------------------
 try:
     if uploaded is not None:
-        df_raw = load_raw(uploaded)
-        st.success(f"Memakai dataset yang kamu upload: **{uploaded.name}**")
+        raw_df, source = pd.read_csv(uploaded, encoding="utf-8-sig"), f"upload: {uploaded.name}"
     else:
-        df_raw = load_raw(DEFAULT_DATASET)
-        st.info("Memakai dataset bawaan: **top_insta_influencers_data.csv**")
-    df, X, y = prepare(df_raw)
-except Exception as e:
-    st.error(f"Dataset tidak bisa diproses: {e}")
+        raw_df, source = load_default()
+    data = prepare(raw_df)
+    if len(data) < 20:
+        raise ValueError("Data terlalu sedikit (minimal 20 baris) untuk dilatih.")
+except Exception as exc:  # noqa: BLE001
+    st.title("🌳 Perbandingan Decision Tree dan Random Forest")
+    st.error(f"Dataset tidak bisa diproses: {exc}")
     st.stop()
 
-st.subheader("1. Dataset")
-c1, c2, c3 = st.columns(3)
-c1.metric("Jumlah baris", df_raw.shape[0])
-c2.metric("Jumlah kolom", df_raw.shape[1])
-c3.metric("Baris dipakai (target valid)", len(y))
-st.dataframe(df_raw.head(20), width="stretch")
+results = train_models(
+    data, float(test_size), int(seed), int(n_estimators), int(dt_depth), int(rf_depth), int(leaf)
+)
+table = results["table"]
 
-R = run_analysis(X, y)
+# ---------------------------------------------------------------------------
+# Halaman utama
+# ---------------------------------------------------------------------------
+st.title("🌳 Perbandingan Decision Tree dan Random Forest")
+st.markdown(
+    "Prediksi **Influence Score** pada dataset Top Instagram Influencers. "
+    f"Sumber data: {source} ({len(data)} baris)."
+)
 
-st.subheader("2. Pembagian Data")
-a, b = st.columns(2)
-a.metric("Data Training (80%)", R["n_train"])
-b.metric("Data Testing (20%)", R["n_test"])
+tab_data, tab_model, tab_pred = st.tabs(["📊 Data", "⚖️ Perbandingan Model", "🔮 Coba Prediksi"])
 
-tab_dt, tab_rf, tab_cmp, tab_exp = st.tabs([
-    "🌲 Decision Tree", "🌳 Random Forest", "⚖️ Perbandingan", "🔁 5 Kali Percobaan",
-])
+# ---- Tab Data -------------------------------------------------------------
+with tab_data:
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Jumlah baris", f"{len(data):,}")
+    c2.metric("Jumlah negara", data["country"].nunique())
+    c3.metric("Rata-rata score", f"{data[TARGET].mean():.1f}")
+    c4.metric("Rentang score", f"{data[TARGET].min():.0f} – {data[TARGET].max():.0f}")
 
-# ----- Decision Tree -----
-with tab_dt:
-    st.markdown("### Hasil Evaluasi Decision Tree")
-    m = st.columns(4)
-    for col, k in zip(m, ["MAE", "MSE", "RMSE", "R2 Score"]):
-        col.metric(k, f"{R['eval_dt'][k]:.4f}")
-    st.markdown("**Visualisasi pohon (kedalaman 3 teratas)**")
-    st.pyplot(R["fig_dt_tree"])
-    st.markdown("**Tabel hasil prediksi**")
-    st.dataframe(prediction_table(R["y_test"], R["pred_dt"]).round(2), width="stretch")
+    st.subheader("Cuplikan data (setelah dibersihkan)")
+    st.dataframe(data.head(20), width="stretch")
 
-# ----- Random Forest -----
-with tab_rf:
-    st.markdown("### Hasil Evaluasi Random Forest")
-    m = st.columns(4)
-    for col, k in zip(m, ["MAE", "MSE", "RMSE", "R2 Score"]):
-        col.metric(k, f"{R['eval_rf'][k]:.4f}")
-    st.markdown("**Salah satu pohon dalam Random Forest**")
-    st.pyplot(R["fig_rf_tree"])
-    st.markdown("**Fitur paling berpengaruh (Top 10)**")
-    top = R["importance"].head(10).sort_values("Importance")
-    fig, ax = plt.subplots(figsize=(10, 5))
-    ax.barh(top["Fitur"], top["Importance"], color=COLOR_RF)
-    ax.set_xlabel("Nilai Importance")
-    ax.grid(axis="x", alpha=0.3)
-    fig.tight_layout()
-    st.pyplot(fig)
-    st.dataframe(R["importance"].head(10).round(4), width="stretch")
-    st.markdown("**Tabel hasil prediksi**")
-    st.dataframe(prediction_table(R["y_test"], R["pred_rf"]).round(2), width="stretch")
+    left, right = st.columns(2)
+    with left:
+        st.subheader("Distribusi Influence Score")
+        fig = px.histogram(data, x=TARGET, nbins=20, color_discrete_sequence=[ACCENT])
+        fig.update_layout(yaxis_title="Jumlah", xaxis_title="Influence score")
+        st.plotly_chart(fig, width="stretch")
+    with right:
+        st.subheader("Korelasi fitur numerik")
+        corr = data[NUM_COLS + [TARGET]].corr()
+        fig = px.imshow(
+            corr, text_auto=".2f", color_continuous_scale="Oranges", aspect="auto"
+        )
+        st.plotly_chart(fig, width="stretch")
 
-# ----- Perbandingan -----
-with tab_cmp:
-    st.markdown("### Tabel Perbandingan Kedua Algoritma")
-    perb = pd.DataFrame({
-        "Algoritma": ["Decision Tree", "Random Forest"],
-        **{k: [R["eval_dt"][k], R["eval_rf"][k]] for k in ["MAE", "MSE", "RMSE", "R2 Score"]},
-    })
-    st.dataframe(perb.round(4), width="stretch", hide_index=True)
+# ---- Tab Perbandingan -----------------------------------------------------
+with tab_model:
+    st.caption(
+        f"Data latih: {results['n_train']} baris · data uji: {results['n_test']} baris. "
+        "MAE dan RMSE makin kecil makin bagus, R² makin besar makin bagus."
+    )
+    st.dataframe(
+        table.set_index("Model").style.format("{:.3f}"),
+        width="stretch",
+    )
 
-    fig, axes = plt.subplots(1, 3, figsize=(15, 4))
-    for ax, metric in zip(axes, ["MAE", "MSE", "RMSE"]):
-        ax.bar(perb["Algoritma"], perb[metric], color=[COLOR_DT, COLOR_RF])
-        ax.set_title("Perbandingan " + metric)
-        ax.grid(axis="y", alpha=0.3)
-    fig.suptitle("Perbandingan Error Decision Tree dan Random Forest")
-    fig.tight_layout()
-    st.pyplot(fig)
-
-    fig, ax = plt.subplots(figsize=(7, 4))
-    ax.bar(perb["Algoritma"], perb["R2 Score"], color=[COLOR_DT, COLOR_RF])
-    ax.set_title("Perbandingan R2 Score")
-    ax.grid(axis="y", alpha=0.3)
-    st.pyplot(fig)
-
-    fig, ax = plt.subplots(figsize=(12, 5))
-    ax.plot(R["y_test"].values, label="Nilai Aktual", marker="o", color="#262626")
-    ax.plot(R["pred_dt"], label="Decision Tree", marker="x", color=COLOR_DT)
-    ax.plot(R["pred_rf"], label="Random Forest", marker="s", color=COLOR_RF)
-    ax.set_title("Perbandingan Nilai Aktual dan Hasil Prediksi")
-    ax.set_xlabel("Data Testing")
-    ax.set_ylabel("Influence Score")
-    ax.legend()
-    ax.grid(alpha=0.3)
-    st.pyplot(fig)
-
-    # Kesimpulan
-    rmse_dt, rmse_rf = R["eval_dt"]["RMSE"], R["eval_rf"]["RMSE"]
-    if rmse_dt < rmse_rf:
-        best, best_rmse, best_r2 = "Decision Tree", rmse_dt, R["eval_dt"]["R2 Score"]
-    elif rmse_rf < rmse_dt:
-        best, best_rmse, best_r2 = "Random Forest", rmse_rf, R["eval_rf"]["R2 Score"]
+    best = table.loc[table["RMSE"].idxmin(), "Model"]
+    other = table.loc[table["Model"] != best, "Model"].iloc[0]
+    b = table[table["Model"] == best].iloc[0]
+    o = table[table["Model"] == other].iloc[0]
+    if abs(b["RMSE"] - o["RMSE"]) / max(o["RMSE"], 1e-9) < 0.02:
+        st.info(
+            f"RMSE kedua model hampir sama ({b['RMSE']:.2f} vs {o['RMSE']:.2f}). "
+            f"Dilihat dari MAE dan R² CV, "
+            f"{table.loc[table['R² CV (5-fold)'].idxmax(), 'Model']} sedikit lebih stabil."
+        )
     else:
-        best, best_rmse = "Keduanya memiliki RMSE yang sama", rmse_dt
-        best_r2 = max(R["eval_dt"]["R2 Score"], R["eval_rf"]["R2 Score"])
+        st.success(
+            f"**{best}** punya error paling kecil pada data uji "
+            f"(RMSE {b['RMSE']:.2f} vs {o['RMSE']:.2f} milik {other}; "
+            f"R² {b['R² Test']:.3f} vs {o['R² Test']:.3f})."
+        )
+    if table["R² Test"].max() < 0.2:
+        st.caption(
+            "Catatan: R² rendah berarti Influence Score sulit ditebak dari fitur yang ada "
+            "(datanya hanya 200 baris dan ada beberapa outlier). Ini temuan analisis, bukan error."
+        )
+    for _, row in table.iterrows():
+        gap = row["R² Train"] - row["R² Test"]
+        if gap > 0.3:
+            st.warning(
+                f"{row['Model']} terindikasi overfitting: R² latih {row['R² Train']:.2f} "
+                f"jauh di atas R² uji {row['R² Test']:.2f}. Coba kecilkan max depth."
+            )
 
-    st.markdown("### Kesimpulan (Pembagian Data Utama)")
-    st.success(f"Algoritma terbaik berdasarkan RMSE: **{best}** (RMSE {best_rmse:.4f}, R² {best_r2:.4f})")
-    if rmse_dt > 0:
-        imp_pct = (rmse_dt - rmse_rf) / rmse_dt * 100
-        if imp_pct > 0:
-            st.write(f"Random Forest memiliki RMSE **{imp_pct:.2f}% lebih rendah** dibandingkan Decision Tree.")
-        elif imp_pct < 0:
-            st.write(f"Decision Tree memiliki RMSE **{abs(imp_pct):.2f}% lebih rendah** dibandingkan Random Forest.")
-        else:
-            st.write("Kedua algoritma memiliki RMSE yang sama.")
-    if best_r2 >= 0.7:
-        st.write("Model memiliki kemampuan prediksi yang cukup baik.")
-    elif best_r2 >= 0:
-        st.write("Model memiliki kemampuan prediksi yang masih terbatas.")
-    else:
-        st.write("Model belum memiliki performa prediksi yang baik karena R² negatif.")
+    long = table.melt(id_vars="Model", value_vars=["MAE", "RMSE"], var_name="Metrik")
+    left, right = st.columns(2)
+    with left:
+        st.subheader("Error (lebih kecil = lebih baik)")
+        fig = px.bar(
+            long, x="Metrik", y="value", color="Model", barmode="group",
+            color_discrete_sequence=[ACCENT, "#4DA3FF"],
+        )
+        fig.update_layout(yaxis_title="Nilai")
+        st.plotly_chart(fig, width="stretch")
+    with right:
+        st.subheader("R² (lebih besar = lebih baik)")
+        r2 = table.melt(
+            id_vars="Model",
+            value_vars=["R² Train", "R² Test", "R² CV (5-fold)"],
+            var_name="Jenis",
+        )
+        fig = px.bar(
+            r2, x="Jenis", y="value", color="Model", barmode="group",
+            color_discrete_sequence=[ACCENT, "#4DA3FF"],
+        )
+        fig.update_layout(yaxis_title="R²")
+        st.plotly_chart(fig, width="stretch")
 
-# ----- 5 percobaan -----
-with tab_exp:
-    T = R["trials"]
-    st.markdown("### Pengujian Konsistensi: 5 Kali Percobaan")
-    st.caption("Setiap percobaan memakai random state pembagian data yang berbeda: 10, 20, 30, 40, 50.")
-    st.dataframe(T.round(4), width="stretch", hide_index=True)
+    st.subheader("Aktual vs prediksi (data uji)")
+    cols = st.columns(2)
+    lo, hi = float(results["y_test"].min()), float(results["y_test"].max())
+    for col, name in zip(cols, results["preds"]):
+        with col:
+            fig = px.scatter(
+                x=results["y_test"], y=results["preds"][name],
+                labels={"x": "Aktual", "y": "Prediksi"},
+                title=name, color_discrete_sequence=[ACCENT],
+            )
+            fig.add_shape(type="line", x0=lo, y0=lo, x1=hi, y1=hi,
+                          line=dict(dash="dash", color="#9AA0A6"))
+            st.plotly_chart(fig, width="stretch")
 
-    st.markdown("**Rata-rata hasil percobaan**")
-    avg = T.drop(columns=["Percobaan", "Random State"]).mean().to_frame("Rata-rata")
-    st.dataframe(avg.round(4), width="stretch")
+    st.subheader("Fitur yang paling berpengaruh")
+    cols = st.columns(2)
+    for col, (name, imp) in zip(cols, results["importance"].items()):
+        with col:
+            fig = px.bar(
+                x=imp.values, y=imp.index, orientation="h", title=name,
+                labels={"x": "Importance", "y": ""},
+                color_discrete_sequence=[ACCENT],
+            )
+            st.plotly_chart(fig, width="stretch")
 
-    rf_menang = int((T["RMSE Random Forest"] < T["RMSE Decision Tree"]).sum())
-    dt_menang = int((T["RMSE Decision Tree"] < T["RMSE Random Forest"]).sum())
-    seri = 5 - rf_menang - dt_menang
-    st.markdown("**Rekapitulasi hasil**")
-    r1, r2, r3 = st.columns(3)
-    r1.metric("Random Forest unggul", f"{rf_menang} kali")
-    r2.metric("Decision Tree unggul", f"{dt_menang} kali")
-    r3.metric("Hasil seri", f"{seri} kali")
+# ---- Tab Prediksi ---------------------------------------------------------
+with tab_pred:
+    st.subheader("Coba prediksi Influence Score")
+    st.caption("Isi angka asli (bukan format 3.3k / 475m). Nilai awal diambil dari median data.")
+    med = data[NUM_COLS].median()
+    countries = sorted(data["country"].unique())
+    with st.form("form_prediksi"):
+        a, b_, c = st.columns(3)
+        posts = a.number_input("Jumlah posts", 0.0, value=float(med["posts"]), step=100.0)
+        followers = b_.number_input("Followers", 0.0, value=float(med["followers"]), step=1e6, format="%.0f")
+        avg_likes = c.number_input("Rata-rata likes", 0.0, value=float(med["avg_likes"]), step=1e5, format="%.0f")
+        d, e, f = st.columns(3)
+        eng = d.number_input("60-day engagement rate (%)", 0.0, value=float(med["60_day_eng_rate"]), step=0.1)
+        new_like = e.number_input("Rata-rata likes post baru", 0.0, value=float(med["new_post_avg_like"]), step=1e5, format="%.0f")
+        total = f.number_input("Total likes", 0.0, value=float(med["total_likes"]), step=1e8, format="%.0f")
+        country = st.selectbox("Negara", countries, index=countries.index("United States") if "United States" in countries else 0)
+        go_pred = st.form_submit_button("Prediksi")
 
-    fig, ax = plt.subplots(figsize=(10, 4.5))
-    ax.plot(T["Percobaan"], T["RMSE Decision Tree"], marker="o", label="Decision Tree", color=COLOR_DT)
-    ax.plot(T["Percobaan"], T["RMSE Random Forest"], marker="s", label="Random Forest", color=COLOR_RF)
-    ax.set_title("Perbandingan RMSE dalam 5 Kali Percobaan")
-    ax.set_xlabel("Percobaan")
-    ax.set_ylabel("RMSE")
-    ax.set_xticks([1, 2, 3, 4, 5])
-    ax.legend()
-    ax.grid(alpha=0.3)
-    st.pyplot(fig)
-
-    dt_avg, rf_avg = T["RMSE Decision Tree"].mean(), T["RMSE Random Forest"].mean()
-    st.markdown("### Kesimpulan Pengujian Konsistensi")
-    st.write(f"Rata-rata RMSE Decision Tree: **{dt_avg:.4f}**")
-    st.write(f"Rata-rata RMSE Random Forest: **{rf_avg:.4f}**")
-    if rf_avg < dt_avg and rf_menang > dt_menang:
-        st.success("Random Forest menunjukkan performa lebih konsisten. "
-                   "Rata-rata RMSE lebih rendah dan lebih sering unggul.")
-    elif rf_avg < dt_avg:
-        st.warning("Random Forest memiliki rata-rata RMSE lebih rendah, namun keunggulannya "
-                   "belum konsisten pada sebagian besar percobaan.")
-    elif dt_avg < rf_avg:
-        st.warning("Decision Tree memiliki rata-rata RMSE lebih rendah. "
-                   "Random Forest belum menunjukkan keunggulan berdasarkan RMSE.")
-    else:
-        st.info("Kedua algoritma memiliki rata-rata RMSE yang sama.")
-    st.caption("RMSE lebih rendah = kesalahan prediksi lebih kecil. "
-               "R² negatif = kemampuan prediksi belum optimal. "
-               "Hasil hanya menggambarkan lima pembagian data yang diuji.")
+    if go_pred:
+        row = pd.DataFrame([{
+            "posts": posts, "followers": followers, "avg_likes": avg_likes,
+            "60_day_eng_rate": eng, "new_post_avg_like": new_like,
+            "total_likes": total, "country": country,
+        }])
+        m1, m2 = st.columns(2)
+        for col, (name, pipe) in zip((m1, m2), results["pipes"].items()):
+            col.metric(name, f"{pipe.predict(row)[0]:.1f}")
